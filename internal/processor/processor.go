@@ -6,7 +6,6 @@ import (
 
 	"github.com/yourname/hyper-sniper-indexer/internal/detector"
 	"github.com/yourname/hyper-sniper-indexer/internal/notifier"
-	"github.com/yourname/hyper-sniper-indexer/internal/storage"
 	"github.com/yourname/hyper-sniper-indexer/pkg/ton"
 	"go.uber.org/zap"
 )
@@ -15,13 +14,20 @@ import (
 type Processor struct {
 	detector *detector.Detector
 	client   ton.Client
-	cache    *storage.RedisCache
+	cache    Cache
 	notifier *notifier.Notifier
 	logger   *zap.Logger
 }
 
+// Cache описывает минимальный интерфейс антидублирования.
+type Cache interface {
+	RegisterSeqno(ctx context.Context, seqno uint32) (bool, error)
+	IsMinterKnown(ctx context.Context, address string) (bool, error)
+	RememberMinter(ctx context.Context, address string) error
+}
+
 // NewProcessor создаёт обработчик.
-func NewProcessor(det *detector.Detector, client ton.Client, cache *storage.RedisCache, ntf *notifier.Notifier, logger *zap.Logger) *Processor {
+func NewProcessor(det *detector.Detector, client ton.Client, cache Cache, ntf *notifier.Notifier, logger *zap.Logger) *Processor {
 	return &Processor{
 		detector: det,
 		client:   client,
