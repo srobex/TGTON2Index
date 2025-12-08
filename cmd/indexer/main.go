@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -26,9 +27,19 @@ func main() {
 	}
 	defer logger.Sync() //nolint:errcheck
 
+	networkFlag := flag.String("network", "", "mainnet или testnet")
+	flag.Parse()
+
 	cfg, err := config.Load(configPath())
 	if err != nil {
 		logger.Fatal("ошибка загрузки конфига", zap.Error(err))
+	}
+
+	if *networkFlag != "" {
+		cfg.App.Network = *networkFlag
+	}
+	if cfg.App.Network != "mainnet" && cfg.App.Network != "testnet" {
+		logger.Fatal("некорректная сеть", zap.String("network", cfg.App.Network))
 	}
 
 	tonClient := ton.NewIndexerClient(cfg.App.Network, cfg.App.Liteservers, logger)
