@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yourname/hyper-sniper-indexer/internal/detector"
+	"github.com/yourname/hyper-sniper-indexer/internal/notifier"
 	"github.com/yourname/hyper-sniper-indexer/internal/storage"
 	"github.com/yourname/hyper-sniper-indexer/pkg/ton"
 	"go.uber.org/zap"
@@ -15,15 +16,17 @@ type Processor struct {
 	detector *detector.Detector
 	client   ton.Client
 	cache    *storage.RedisCache
+	notifier *notifier.Notifier
 	logger   *zap.Logger
 }
 
 // NewProcessor создаёт обработчик.
-func NewProcessor(det *detector.Detector, client ton.Client, cache *storage.RedisCache, logger *zap.Logger) *Processor {
+func NewProcessor(det *detector.Detector, client ton.Client, cache *storage.RedisCache, ntf *notifier.Notifier, logger *zap.Logger) *Processor {
 	return &Processor{
 		detector: det,
 		client:   client,
 		cache:    cache,
+		notifier: ntf,
 		logger:   logger,
 	}
 }
@@ -89,6 +92,10 @@ func (p *Processor) Handle(event ton.Event) error {
 		if err := p.cache.RememberMinter(ctx, meta.Address); err != nil {
 			p.logger.Warn("не удалось сохранить минтер в кэш", zap.Error(err))
 		}
+	}
+
+	if p.notifier != nil {
+		p.notifier.Notify(ctx, meta)
 	}
 
 	return nil

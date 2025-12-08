@@ -10,6 +10,7 @@ import (
 	"github.com/yourname/hyper-sniper-indexer/internal/config"
 	"github.com/yourname/hyper-sniper-indexer/internal/detector"
 	"github.com/yourname/hyper-sniper-indexer/internal/indexer"
+	"github.com/yourname/hyper-sniper-indexer/internal/notifier"
 	"github.com/yourname/hyper-sniper-indexer/internal/processor"
 	"github.com/yourname/hyper-sniper-indexer/internal/storage"
 	"github.com/yourname/hyper-sniper-indexer/internal/utils"
@@ -38,7 +39,8 @@ func main() {
 	}
 	defer store.Close()
 
-	proc := processor.NewProcessor(det, tonClient, store.Cache, logger)
+	ntf := notifier.New(cfg, logger)
+	proc := processor.NewProcessor(det, tonClient, store.Cache, ntf, logger)
 	svc := indexer.NewService(cfg, tonClient, proc, logger)
 
 	ctx, cancel := signalContext()
