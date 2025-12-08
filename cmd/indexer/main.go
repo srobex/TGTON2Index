@@ -11,6 +11,7 @@ import (
 	"github.com/yourname/hyper-sniper-indexer/internal/detector"
 	"github.com/yourname/hyper-sniper-indexer/internal/indexer"
 	"github.com/yourname/hyper-sniper-indexer/internal/processor"
+	"github.com/yourname/hyper-sniper-indexer/internal/storage"
 	"github.com/yourname/hyper-sniper-indexer/internal/utils"
 	"github.com/yourname/hyper-sniper-indexer/pkg/ton"
 	"go.uber.org/zap"
@@ -31,7 +32,13 @@ func main() {
 
 	tonClient := ton.NewIndexerClient(cfg.App.Network, cfg.App.Liteservers, logger)
 	det := detector.NewDetector(tonClient, logger)
-	proc := processor.NewProcessor(det, tonClient, logger)
+	store, err := storage.NewStorage(cfg)
+	if err != nil {
+		logger.Fatal("ошибка инициализации хранилища", zap.Error(err))
+	}
+	defer store.Close()
+
+	proc := processor.NewProcessor(det, tonClient, store.Cache, logger)
 	svc := indexer.NewService(cfg, tonClient, proc, logger)
 
 	ctx, cancel := signalContext()
