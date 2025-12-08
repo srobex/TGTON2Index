@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/yourname/hyper-sniper-indexer/internal/config"
 	"github.com/yourname/hyper-sniper-indexer/internal/processor"
@@ -44,6 +45,7 @@ func (s *Service) Start(ctx context.Context) error {
 
 	s.logger.Info("ton-indexer запущен", zap.String("network", s.cfg.App.Network))
 
+	go s.runCatchup(runCtx)
 	go s.runRealtime(runCtx)
 	return nil
 }
@@ -65,6 +67,22 @@ func (s *Service) runRealtime(ctx context.Context) {
 
 	if err := s.client.Subscribe(ctx, handler); err != nil {
 		s.logger.Error("подписка realtime завершилась с ошибкой", zap.Error(err))
+	}
+}
+
+func (s *Service) runCatchup(ctx context.Context) {
+	since := time.Now().Add(-s.cfg.CatchupDuration())
+	s.logger.Info("запуск catchup", zap.Time("since", since))
+
+	handler := func(event ton.Event) error {
+		if s.processor == nil {
+			return fmt.Errorf("processor не инициализирован")
+		}
+		return s.processor.Handle(event)
+	}
+
+	if err := s.client.Catchup(ctx, since, handler); err != nil {
+		s.logger.Error("catchup завершился с ошибкой", zap.Error(err))
 	}
 }
 
