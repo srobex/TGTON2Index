@@ -1,16 +1,19 @@
 app:
-  network: "mainnet"
-  liteservers_list: []
-  catchup_hours: 24
+  network: "mainnet"                # mainnet или testnet
+  liteservers_list: []              # необязательный ручной список, иначе из global-config.json
+  catchup_hours: 24                 # окно для режима catchup
+  master_seqno_cache_size: 1000     # кэш seqno для антидубликатов
+  minter_cache_ttl: "24h"           # TTL кэша минтеров в Redis
 
 postgres:
-  dsn: "postgres://user:password@localhost:5432/hyper_sniper_mainnet?sslmode=disable"
+  dsn: "postgres://sniper:sniper@localhost:5432/hyper_sniper_mainnet?sslmode=disable"
+  dsn_testnet: "postgres://sniper:sniper@localhost:5432/hyper_sniper_testnet?sslmode=disable"
 
 redis:
   addr: "localhost:6379"
 
 notifier:
-  tg_bot_token: ""
-  tg_chat_id: ""
-  webhook_url: ""
+  tg_bot_token: ""                  # если пусто — TG notifier не стартует
+  tg_chat_id: ""                    # канал/чат для отправки
+  webhook_url: ""                   # опционально, можно оставить пустым
 
