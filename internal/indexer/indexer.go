@@ -43,6 +43,8 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	s.logger.Info("ton-indexer запущен", zap.String("network", s.cfg.App.Network))
+
+	go s.runRealtime(runCtx)
 	return nil
 }
 
@@ -50,6 +52,19 @@ func (s *Service) Start(ctx context.Context) error {
 func (s *Service) Stop() {
 	if s.cancel != nil {
 		s.cancel()
+	}
+}
+
+func (s *Service) runRealtime(ctx context.Context) {
+	handler := func(event ton.Event) error {
+		if s.processor == nil {
+			return fmt.Errorf("processor не инициализирован")
+		}
+		return s.processor.Handle(event)
+	}
+
+	if err := s.client.Subscribe(ctx, handler); err != nil {
+		s.logger.Error("подписка realtime завершилась с ошибкой", zap.Error(err))
 	}
 }
 

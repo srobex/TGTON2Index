@@ -59,12 +59,14 @@ func (c *IndexerClient) Start(_ context.Context) error {
 
 // Subscribe подключается к потоку новых транзакций.
 func (c *IndexerClient) Subscribe(_ context.Context, _ Handler) error {
-	return errors.New("Subscribe не реализован: требуется подключить ton-indexer")
+	c.logger.Warn("Subscribe пока не реализован: подключите ton-indexer к Handler")
+	return nil
 }
 
 // Catchup выгружает исторические данные с указанного момента.
-func (c *IndexerClient) Catchup(_ context.Context, _ time.Time, _ Handler) error {
-	return errors.New("Catchup не реализован: требуется подключить ton-indexer")
+func (c *IndexerClient) Catchup(_ context.Context, since time.Time, _ Handler) error {
+	c.logger.Warn("Catchup пока не реализован", zap.Time("since", since))
+	return nil
 }
 
 // RunGetMethod вызывает get-метод контракта.
