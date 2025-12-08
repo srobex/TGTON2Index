@@ -1,0 +1,16 @@
+app:
+  network: "mainnet"
+  liteservers_list: []
+  catchup_hours: 24
+
+postgres:
+  dsn: "postgres://user:password@localhost:5432/hyper_sniper_mainnet?sslmode=disable"
+
+redis:
+  addr: "localhost:6379"
+
+notifier:
+  tg_bot_token: ""
+  tg_chat_id: ""
+  webhook_url: ""
+
