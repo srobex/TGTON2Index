@@ -1,6 +1,13 @@
 version: "3.9"
 
+# HyperSniper Stack — Индексер + Бот + Инфраструктура
+# Запуск: cd docker && docker-compose up --build -d
+
 services:
+  # ============================================================================
+  # Инфраструктура (общая для индексера и бота)
+  # ============================================================================
+  
   postgres:
     image: postgres:16
     environment:
@@ -12,14 +19,30 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sniper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  app:
+  # ============================================================================
+  # HyperSniper Indexer (Go)
+  # ============================================================================
+  
+  indexer:
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -27,13 +50,41 @@ services:
       CONFIG_PATH: /config/config.yaml
       HSI_POSTGRES_DSN: postgres://sniper:sniper@postgres:5432/hyper_sniper_mainnet?sslmode=disable
       HSI_REDIS_ADDR: redis:6379
+      # Webhook указывает на бота внутри docker сети
+      HSI_NOTIFIER_WEBHOOK_URL: http://bot:8000/api/indexer/event
     volumes:
       - ../config.yaml:/config/config.yaml:ro
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+  # ============================================================================
+  # HyperSniper Bot (Python) — раскомментировать когда добавите Dockerfile
+  # ============================================================================
+  
+  # bot:
+  #   build:
+  #     context: ../../TGTON2
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     CACHE__BACKEND: redis
+  #     CACHE__REDIS_DSN: redis://redis:6379/0
+  #     TON__USE_WEBSOCKET: "false"
+  #     DATABASE__DSN: sqlite+aiosqlite:///./database/hypersniper.db
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - bot_data:/app/database
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   restart: unless-stopped
 
 volumes:
   pgdata:
+  redisdata:
+  # bot_data:
 

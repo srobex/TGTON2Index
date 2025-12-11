@@ -1,7 +1,7 @@
 app:
   network: "mainnet"                # mainnet или testnet
   liteservers_list: []              # необязательный ручной список, иначе из global-config.json
-  catchup_hours: 24                 # окно для режима catchup (часы)
+  catchup_hours: 0                  # 0 = только realtime, без истории (для продакшена)
   master_seqno_cache_size: 1000     # кэш seqno для антидубликатов
   minter_cache_ttl: "24h"           # TTL кэша минтеров в Redis
   
@@ -14,12 +14,14 @@ postgres:
   dsn_testnet: "postgres://sniper:sniper@localhost:5432/hyper_sniper_testnet?sslmode=disable"
 
 redis:
-  addr: "localhost:6379"
+  addr: "localhost:6379"            # общий Redis с ботом
 
 notifier:
   tg_bot_token: ""                  # если пусто — TG notifier не стартует
-  tg_chat_id: ""                    # канал/чат для отправки
-  webhook_url: ""                   # опционально, можно оставить пустым
+  tg_chat_id: ""                    # канал/чат для отправки (тот же что у бота или отдельный)
+  # Webhook для отправки событий в HyperSniper Bot
+  # Бот должен быть запущен на этом адресе с FastAPI
+  webhook_url: "http://localhost:8000/api/indexer/event"
 
 # Дополнительные code_hash для Jetton Minter (добавляются к встроенным)
 # Формат: hex_hash: "описание"

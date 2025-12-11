@@ -1,12 +1,84 @@
 # HyperSniper Indexer
 
-High-speed TON jetton minter indexer aimed at 1–2s detection latency. This repository contains the standalone indexer used by HyperSniper Bot to stream new jetton minter events to downstream consumers.
+Высокоскоростной индексатор TON для обнаружения новых Jetton Minter с задержкой 1-2 секунды.
 
-## Quick start
+## Возможности
 
-- Prereqs: Go 1.23+, Docker, docker-compose.
-- Configure `config.yaml` (network, Redis, Postgres DSN, Telegram token/chat, webhook).
-- Local run: `go run ./cmd/indexer --network=mainnet`
-- Docker compose: `cd docker && docker-compose up --build`
-- Detailed Russian guide: `ИНСТРУКЦИЯ_ПО_ЗАПУСКУ.md`.
+- ⚡ Задержка обнаружения 1-3 сек после появления в блоке
+- 🔍 Детекция по интерфейсу `get_jetton_data` (TEP-74)
+- 📱 Уведомления в Telegram
+- 🔗 Webhook для интеграции с торговым ботом
+- 🗄️ Redis кэш для антидубликации
+- 🐳 Docker Compose для лёгкого развёртывания
 
+## Быстрый старт
+
+### Требования
+
+- Go 1.23+
+- Redis 7+
+- (Опционально) Docker
+
+### Локальный запуск
+
+```bash
+# Клонируйте репозиторий
+git clone https://github.com/srobex/TGTON2Index.git
+cd TGTON2Index
+
+# Настройте config.yaml
+cp config.yaml.example config.yaml
+nano config.yaml
+
+# Запустите
+go run ./cmd/indexer --network=mainnet
+```
+
+### Docker Compose
+
+```bash
+cd docker
+docker-compose up --build -d
+```
+
+## Конфигурация
+
+Отредактируйте `config.yaml`:
+
+```yaml
+app:
+  network: "mainnet"
+  catchup_hours: 0  # 0 = только realtime
+
+redis:
+  addr: "localhost:6379"
+
+notifier:
+  tg_bot_token: "токен_от_BotFather"
+  tg_chat_id: "id_канала"
+  webhook_url: "http://localhost:8000/api/indexer/event"
+```
+
+## Интеграция с HyperSniper Bot
+
+Индексер отправляет webhook на endpoint бота при обнаружении нового токена.
+
+Подробнее: [ПЛАН](PLAN.md) | [Инструкция](ИНСТРУКЦИЯ_ПО_ЗАПУСКУ.md)
+
+## Структура
+
+```
+├── cmd/indexer/         # Точка входа
+├── internal/
+│   ├── detector/        # Детектор Jetton Minter
+│   ├── processor/       # Обработчик событий
+│   ├── notifier/        # Telegram + Webhook
+│   └── storage/         # Redis кэш
+├── pkg/ton/             # TON клиент
+├── docker/              # Docker Compose
+└── config.yaml          # Конфигурация
+```
+
+## Лицензия
+
+MIT
