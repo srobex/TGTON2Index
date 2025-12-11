@@ -36,7 +36,7 @@ func NewRedisCache(addr string, ttl time.Duration, seqnoWindow int) (*RedisCache
 		return nil, fmt.Errorf("redis ping failed: %w", err)
 	}
 
-	win := defaultSeqnoWindow
+	win := int64(defaultSeqnoWindow)
 	if seqnoWindow > 0 {
 		win = int64(seqnoWindow)
 	}
