@@ -41,7 +41,7 @@ type Event struct {
 	Timestamp      time.Time
 	Seqno          uint32
 	Workchain      int32
-	Shard          uint64
+	Shard          int64
 	TxHash         string
 	TxLT           uint64
 	IsDeploy       bool
