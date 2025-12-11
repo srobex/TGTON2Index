@@ -10,11 +10,4 @@ require (
 	github.com/redis/go-redis/v9 v9.5.1
 	github.com/spf13/viper v1.18.2
 	go.uber.org/zap v1.27.0
-	github.com/ton-org/ton-indexer v0.1.0
 )
-
-replace github.com/ton-org/ton-indexer => github.com/ton-org/ton-indexer v0.1.0
-
-
-
-
