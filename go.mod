@@ -15,3 +15,6 @@ require (
 
 replace github.com/ton-org/ton-indexer => github.com/ton-org/ton-indexer v0.1.0
 
+
+
+

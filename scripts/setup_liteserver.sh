@@ -3,3 +3,6 @@ set -euo pipefail
 
 echo "Configure liteserver placeholder"
 
+
+
+
