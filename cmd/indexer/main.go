@@ -42,27 +42,62 @@ func main() {
 		logger.Fatal("некорректная сеть", zap.String("network", cfg.App.Network))
 	}
 
-	tonClient := ton.NewIndexerClient(cfg.App.Network, cfg.App.Liteservers, logger)
-	det := detector.NewDetector(tonClient, logger)
+	logger.Info("🚀 Запуск HyperSniper Indexer",
+		zap.String("network", cfg.App.Network),
+		zap.Int("catchup_hours", cfg.App.CatchupHours),
+	)
+
+	// Инициализируем хранилище (Redis)
 	store, err := storage.NewStorage(cfg)
 	if err != nil {
 		logger.Fatal("ошибка инициализации хранилища", zap.Error(err))
 	}
 	defer store.Close()
+	logger.Info("✅ Redis подключён", zap.String("addr", cfg.Redis.Addr))
 
-	ntf := notifier.New(cfg, logger)
-	proc := processor.NewProcessor(det, tonClient, store.Cache, ntf, logger)
-	svc := indexer.NewService(cfg, tonClient, proc, logger)
+	// Создаём TON клиент
+	tonClient := ton.NewIndexerClient(cfg.App.Network, cfg.App.Liteservers, logger)
 
+	// Подключаемся к TON
 	ctx, cancel := signalContext()
 	defer cancel()
+
+	if err := tonClient.Start(ctx); err != nil {
+		logger.Fatal("ошибка подключения к TON", zap.Error(err))
+	}
+	logger.Info("✅ Подключение к TON установлено")
+
+	// Создаём детектор (передаём TON клиент как MetadataFetcher)
+	det := detector.NewDetector(tonClient, logger)
+	det.LoadRealCodeHashes() // Загружаем реальные хэши
+	logger.Info("✅ Детектор инициализирован", zap.Int("known_hashes", len(det.GetKnownHashes())))
+
+	// Создаём нотификатор
+	ntf := notifier.New(cfg, logger)
+	if cfg.Notifier.TgBotToken != "" {
+		logger.Info("✅ Telegram уведомления включены", zap.String("chat_id", cfg.Notifier.TgChatID))
+	} else {
+		logger.Info("⚠️ Telegram уведомления отключены (токен не указан)")
+	}
+
+	// Создаём процессор
+	proc := processor.NewProcessor(det, tonClient, store.Cache, ntf, logger)
+
+	// Создаём и запускаем сервис индексатора
+	svc := indexer.NewService(cfg, tonClient, proc, logger)
 
 	if err := svc.Start(ctx); err != nil {
 		logger.Fatal("ошибка запуска индексатора", zap.Error(err))
 	}
 
+	logger.Info("✅ Индексатор запущен, сканируем блокчейн TON...")
+	logger.Info("📊 Цель: обнаружение новых Jetton Minter за 1-2 секунды")
+
+	// Ждём сигнала завершения
 	<-ctx.Done()
+	logger.Info("🛑 Получен сигнал завершения, останавливаемся...")
 	svc.Stop()
+	logger.Info("✅ Индексатор остановлен")
 }
 
 func configPath() string {
@@ -85,4 +120,3 @@ func signalContext() (context.Context, context.CancelFunc) {
 
 	return ctx, cancel
 }
-

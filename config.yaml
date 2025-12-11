@@ -1,9 +1,13 @@
 app:
   network: "mainnet"                # mainnet или testnet
   liteservers_list: []              # необязательный ручной список, иначе из global-config.json
-  catchup_hours: 24                 # окно для режима catchup
+  catchup_hours: 24                 # окно для режима catchup (часы)
   master_seqno_cache_size: 1000     # кэш seqno для антидубликатов
   minter_cache_ttl: "24h"           # TTL кэша минтеров в Redis
+  
+  # Параметры скорости (для тюнинга)
+  block_poll_interval_ms: 100       # интервал опроса новых блоков (мс) - меньше = быстрее
+  shard_workers: 8                  # количество воркеров для параллельной обработки шардов
 
 postgres:
   dsn: "postgres://sniper:sniper@localhost:5432/hyper_sniper_mainnet?sslmode=disable"
@@ -17,3 +21,6 @@ notifier:
   tg_chat_id: ""                    # канал/чат для отправки
   webhook_url: ""                   # опционально, можно оставить пустым
 
+# Дополнительные code_hash для Jetton Minter (добавляются к встроенным)
+# Формат: hex_hash: "описание"
+extra_code_hashes: {}
