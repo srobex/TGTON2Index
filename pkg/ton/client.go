@@ -2,8 +2,6 @@ package ton
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -26,28 +24,28 @@ const (
 	mainnetConfigURL = "https://ton.org/global-config.json"
 	testnetConfigURL = "https://ton.org/testnet-global.config.json"
 
-	// Интервал опроса новых блоков (чем меньше — тем быстрее, но больше нагрузка)
+	// Интервал опроса новых блоков
 	blockPollInterval = 100 * time.Millisecond
 
 	// Таймаут на получение блока
 	blockTimeout = 5 * time.Second
 
-	// Количество воркеров = GOMAXPROCS * 4 (рекомендация эксперта)
+	// Количество воркеров = GOMAXPROCS * 4
 	workerMultiplier = 4
 )
 
-// Event описывает минимальный набор данных о транзакции с деплоем.
+// Event описывает данные о транзакции с деплоем.
 type Event struct {
 	AccountAddress string
 	CodeHash       string
 	Timestamp      time.Time
 	Seqno          uint32
 	Workchain      int32
-	Shard          int64
-	TxHash         string // хэш транзакции
-	TxLT           uint64 // logical time
+	Shard          uint64
+	TxHash         string
+	TxLT           uint64
 	IsDeploy       bool
-	BlockUnixtime  int64 // время блока для расчёта latency
+	BlockUnixtime  int64
 }
 
 // Handler получает события из индексатора.
@@ -64,11 +62,11 @@ type Client interface {
 
 // LatencyStats хранит статистику по задержкам.
 type LatencyStats struct {
-	TotalEvents     int64
-	TotalLatencyMs  int64
-	MinLatencyMs    int64
-	MaxLatencyMs    int64
-	LastLatencyMs   int64
+	TotalEvents    int64
+	TotalLatencyMs int64
+	MinLatencyMs   int64
+	MaxLatencyMs   int64
+	LastLatencyMs  int64
 }
 
 // IndexerClient — высокоскоростной клиент для индексации TON.
@@ -80,24 +78,17 @@ type IndexerClient struct {
 	pool         *liteclient.ConnectionPool
 	api          ton.APIClientWrapped
 	mu           sync.RWMutex
-	lastMC       uint32 // последний обработанный seqno мастерчейна
-	shardWorkers int    // количество воркеров
+	lastMC       uint32
+	shardWorkers int
 
-	// Статистика
 	stats        LatencyStats
 	blocksTotal  int64
 	txTotal      int64
 	deploysTotal int64
 }
 
-// GetAPI возвращает API клиент для прямого доступа (нужен детектору).
-func (c *IndexerClient) GetAPI() ton.APIClientWrapped {
-	return c.api
-}
-
 // NewIndexerClient создаёт клиента для выбранной сети.
 func NewIndexerClient(network string, liteservers []string, logger *zap.Logger) *IndexerClient {
-	// Количество воркеров = GOMAXPROCS * 4
 	workers := runtime.GOMAXPROCS(0) * workerMultiplier
 	if workers < 8 {
 		workers = 8
@@ -117,11 +108,10 @@ func NewIndexerClient(network string, liteservers []string, logger *zap.Logger) 
 	}
 }
 
-// Start подключается к liteserver'ам и подготавливает API.
+// Start подключается к liteserver'ам.
 func (c *IndexerClient) Start(ctx context.Context) error {
 	c.pool = liteclient.NewConnectionPool()
 
-	// Определяем URL конфига
 	configURL := mainnetConfigURL
 	if c.network == "testnet" {
 		configURL = testnetConfigURL
@@ -138,9 +128,7 @@ func (c *IndexerClient) Start(ctx context.Context) error {
 		return fmt.Errorf("не удалось подключиться к liteservers: %w", err)
 	}
 
-	// Создаём API клиент с:
-	// - ProofCheckPolicyFast для скорости
-	// - WithRetry для надёжности
+	// Создаём API клиент
 	c.api = ton.NewAPIClient(c.pool, ton.ProofCheckPolicyFast).WithRetry()
 
 	c.logger.Info("подключение к TON установлено",
@@ -150,20 +138,18 @@ func (c *IndexerClient) Start(ctx context.Context) error {
 	return nil
 }
 
-// Subscribe подключается к потоку новых блоков и транзакций в реальном времени.
-// КРИТИЧНО: Используем StickyContext для консистентности запросов к одному liteserver.
+// Subscribe подключается к потоку новых блоков в реальном времени.
 func (c *IndexerClient) Subscribe(ctx context.Context, handler Handler) error {
 	if c.api == nil {
-		return fmt.Errorf("API клиент не инициализирован, вызовите Start() сначала")
+		return fmt.Errorf("API клиент не инициализирован")
 	}
 
 	c.logger.Info("запускаем подписку на новые блоки",
 		zap.Duration("poll_interval", blockPollInterval),
 	)
 
-	// Получаем текущий мастерчейн блок с StickyContext
-	stickyCtx := c.api.StickyContext(ctx)
-	master, err := c.api.CurrentMasterchainInfo(stickyCtx)
+	// Получаем текущий мастерчейн блок
+	master, err := c.api.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("не удалось получить текущий мастерчейн: %w", err)
 	}
@@ -172,26 +158,19 @@ func (c *IndexerClient) Subscribe(ctx context.Context, handler Handler) error {
 	c.lastMC = master.SeqNo
 	c.mu.Unlock()
 
-	c.logger.Info("начинаем с блока мастерчейна",
-		zap.Uint32("seqno", master.SeqNo),
-		zap.Time("block_time", time.Unix(int64(master.GenUtime), 0)),
-	)
+	c.logger.Info("начинаем с блока мастерчейна", zap.Uint32("seqno", master.SeqNo))
 
 	// Основной цикл опроса новых блоков
 	for {
 		select {
 		case <-ctx.Done():
-			c.logger.Info("подписка остановлена", zap.String("reason", ctx.Err().Error()))
+			c.logger.Info("подписка остановлена")
 			return ctx.Err()
 		default:
 		}
 
-		// КРИТИЧНО: Новый StickyContext для каждого цикла опроса
-		// Это гарантирует, что все запросы для одного блока идут на один liteserver
-		pollCtx := c.api.StickyContext(ctx)
-
 		// Получаем последний мастерчейн блок
-		newMaster, err := c.api.CurrentMasterchainInfo(pollCtx)
+		newMaster, err := c.api.CurrentMasterchainInfo(ctx)
 		if err != nil {
 			c.logger.Warn("ошибка получения мастерчейна", zap.Error(err))
 			time.Sleep(blockPollInterval)
@@ -206,11 +185,8 @@ func (c *IndexerClient) Subscribe(ctx context.Context, handler Handler) error {
 		if newMaster.SeqNo > lastSeqno {
 			startTime := time.Now()
 
-			// Обрабатываем все пропущенные блоки
 			for seqno := lastSeqno + 1; seqno <= newMaster.SeqNo; seqno++ {
-				// Для каждого блока — свой StickyContext
-				blockCtx := c.api.StickyContext(ctx)
-				if err := c.processBlock(blockCtx, seqno, handler); err != nil {
+				if err := c.processBlock(ctx, seqno, handler); err != nil {
 					c.logger.Warn("ошибка обработки блока",
 						zap.Uint32("seqno", seqno),
 						zap.Error(err),
@@ -225,7 +201,6 @@ func (c *IndexerClient) Subscribe(ctx context.Context, handler Handler) error {
 
 			processingTime := time.Since(startTime)
 
-			// Логируем каждые 100 блоков или если задержка большая
 			if newMaster.SeqNo%100 == 0 || processingTime > time.Second {
 				c.logger.Info("блоки обработаны",
 					zap.Uint32("seqno", newMaster.SeqNo),
@@ -237,7 +212,6 @@ func (c *IndexerClient) Subscribe(ctx context.Context, handler Handler) error {
 			}
 		}
 
-		// Минимальная задержка между опросами
 		time.Sleep(blockPollInterval)
 	}
 }
@@ -248,7 +222,8 @@ func (c *IndexerClient) processBlock(ctx context.Context, seqno uint32, handler 
 	defer cancel()
 
 	// Получаем информацию о блоке мастерчейна
-	masterInfo, err := c.api.LookupBlock(blockCtx, -1, 0x8000000000000000, seqno)
+	// Shard для мастерчейна: -9223372036854775808 (минимальный int64)
+	masterInfo, err := c.api.LookupBlock(blockCtx, -1, -9223372036854775808, seqno)
 	if err != nil {
 		return fmt.Errorf("не удалось найти блок %d: %w", seqno, err)
 	}
@@ -259,11 +234,10 @@ func (c *IndexerClient) processBlock(ctx context.Context, seqno uint32, handler 
 		return fmt.Errorf("не удалось получить шарды блока %d: %w", seqno, err)
 	}
 
-	// Параллельная обработка шардов для максимальной скорости
+	// Параллельная обработка шардов
 	var wg sync.WaitGroup
-	shardChan := make(chan *ton.BlockIDExt, len(shards)+1) // +1 для мастерчейна
+	shardChan := make(chan *ton.BlockIDExt, len(shards)+1)
 
-	// Запускаем воркеры
 	numWorkers := c.shardWorkers
 	if numWorkers > len(shards)+1 {
 		numWorkers = len(shards) + 1
@@ -274,12 +248,10 @@ func (c *IndexerClient) processBlock(ctx context.Context, seqno uint32, handler 
 		go func() {
 			defer wg.Done()
 			for shard := range shardChan {
-				// Для каждого шарда — свой контекст с таймаутом
 				shardCtx, shardCancel := context.WithTimeout(ctx, blockTimeout)
 				if err := c.processShard(shardCtx, shard, seqno, handler); err != nil {
 					c.logger.Debug("ошибка обработки шарда",
 						zap.Int32("workchain", shard.Workchain),
-						zap.Uint32("seqno", shard.SeqNo),
 						zap.Error(err),
 					)
 				}
@@ -288,7 +260,7 @@ func (c *IndexerClient) processBlock(ctx context.Context, seqno uint32, handler 
 		}()
 	}
 
-	// Отправляем шарды на обработку (включая мастерчейн)
+	// Обрабатываем мастерчейн и все шарды
 	shardChan <- masterInfo
 	for _, shard := range shards {
 		shardChan <- shard
@@ -302,65 +274,69 @@ func (c *IndexerClient) processBlock(ctx context.Context, seqno uint32, handler 
 // processShard обрабатывает транзакции одного шарда.
 func (c *IndexerClient) processShard(ctx context.Context, shard *ton.BlockIDExt, mcSeqno uint32, handler Handler) error {
 	// Получаем все транзакции шарда
-	var txList []*tlb.Transaction
+	var fetchedIDs []ton.TransactionShortInfo
 	var after *ton.TransactionID3
 	var more = true
 
 	for more {
-		txs, err := c.api.GetBlockTransactionsV2(ctx, shard, 100, after)
+		ids, hasMore, err := c.api.GetBlockTransactionsV2(ctx, shard, 100, after)
 		if err != nil {
 			return fmt.Errorf("ошибка получения транзакций: %w", err)
 		}
 
-		txList = append(txList, txs...)
-		atomic.AddInt64(&c.txTotal, int64(len(txs)))
+		fetchedIDs = append(fetchedIDs, ids...)
+		more = hasMore
 
-		if len(txs) < 100 {
-			more = false
-		} else {
-			lastTx := txs[len(txs)-1]
+		if len(ids) > 0 && hasMore {
+			last := ids[len(ids)-1]
 			after = &ton.TransactionID3{
-				Account: lastTx.AccountAddr,
-				LT:      lastTx.LT,
+				Account: last.Account,
+				LT:      last.LT,
 			}
 		}
 	}
 
-	// Время блока для расчёта latency
-	blockUnixtime := int64(shard.SeqNo) // TODO: получить реальное время из блока
+	atomic.AddInt64(&c.txTotal, int64(len(fetchedIDs)))
+
+	// Время блока
+	blockUnixtime := time.Now().Unix()
 
 	// Обрабатываем каждую транзакцию
-	for _, tx := range txList {
-		// Проверяем, является ли это деплоем контракта (УЛУЧШЕННАЯ ЛОГИКА)
-		isDeploy, codeHash := c.analyzeTransaction(tx)
+	for _, txInfo := range fetchedIDs {
+		// Получаем полную транзакцию для анализа
+		txList, err := c.api.GetTransaction(ctx, shard, address.NewAddress(0, byte(shard.Workchain), txInfo.Account), txInfo.LT)
+		if err != nil {
+			c.logger.Debug("не удалось получить транзакцию", zap.Error(err))
+			continue
+		}
+
+		if txList == nil {
+			continue
+		}
+
+		// Проверяем, является ли это деплоем
+		isDeploy, codeHash := c.analyzeTransaction(txList)
 		if !isDeploy {
 			continue
 		}
 
 		atomic.AddInt64(&c.deploysTotal, 1)
 
-		addr := tx.AccountAddr
-		addrStr := fmt.Sprintf("%d:%s", shard.Workchain, hex.EncodeToString(addr))
+		addrStr := fmt.Sprintf("%d:%s", shard.Workchain, hex.EncodeToString(txInfo.Account))
 
-		// Вычисляем хэш транзакции
-		txHash := "" // TODO: вычислить из tx
-
-		// Создаём событие
 		event := Event{
 			AccountAddress: addrStr,
 			CodeHash:       codeHash,
-			Timestamp:      time.Unix(int64(tx.Now), 0),
+			Timestamp:      time.Unix(int64(txList.Now), 0),
 			Seqno:          mcSeqno,
 			Workchain:      shard.Workchain,
-			Shard:          int64(shard.Shard),
-			TxHash:         txHash,
-			TxLT:           tx.LT,
+			Shard:          shard.Shard,
+			TxLT:           txInfo.LT,
 			IsDeploy:       true,
 			BlockUnixtime:  blockUnixtime,
 		}
 
-		// Измеряем latency
-		latencyMs := time.Now().UnixMilli() - (int64(tx.Now) * 1000)
+		latencyMs := time.Now().UnixMilli() - (int64(txList.Now) * 1000)
 		c.recordLatency(latencyMs)
 
 		if err := handler(event); err != nil {
@@ -371,24 +347,11 @@ func (c *IndexerClient) processShard(ctx context.Context, shard *ton.BlockIDExt,
 	return nil
 }
 
-// analyzeTransaction проверяет, является ли транзакция деплоем нового контракта.
-// УЛУЧШЕННАЯ ЛОГИКА на основе рекомендаций эксперта:
-// - Проверяем переход статуса: nonexist/uninit → active
-// - Проверяем наличие StateInit
+// analyzeTransaction проверяет, является ли транзакция деплоем.
 func (c *IndexerClient) analyzeTransaction(tx *tlb.Transaction) (isDeploy bool, codeHash string) {
-	// Базовая проверка: должен быть StateUpdate
-	if tx.StateUpdate == nil {
+	if tx == nil {
 		return false, ""
 	}
-
-	// Проверяем описание транзакции
-	if tx.Description == nil {
-		return false, ""
-	}
-
-	// Получаем тип описания
-	desc := tx.Description
-	_ = desc // используется для дальнейшего анализа
 
 	// Проверяем входящее сообщение
 	if tx.IO.In == nil {
@@ -417,7 +380,6 @@ func (c *IndexerClient) analyzeTransaction(tx *tlb.Transaction) (isDeploy bool, 
 	}
 
 	// Есть StateInit — это деплой!
-	// Извлекаем code_hash
 	if stateInit.Code == nil {
 		return false, ""
 	}
@@ -463,7 +425,7 @@ func (c *IndexerClient) GetStats() LatencyStats {
 	return c.stats
 }
 
-// Catchup выгружает исторические данные с указанного момента.
+// Catchup выгружает исторические данные.
 func (c *IndexerClient) Catchup(ctx context.Context, since time.Time, handler Handler) error {
 	if c.api == nil {
 		return fmt.Errorf("API клиент не инициализирован")
@@ -471,16 +433,11 @@ func (c *IndexerClient) Catchup(ctx context.Context, since time.Time, handler Ha
 
 	c.logger.Info("запускаем catchup", zap.Time("since", since))
 
-	// Используем StickyContext
-	stickyCtx := c.api.StickyContext(ctx)
-
-	// Получаем текущий блок
-	master, err := c.api.CurrentMasterchainInfo(stickyCtx)
+	master, err := c.api.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("не удалось получить текущий мастерчейн: %w", err)
 	}
 
-	// Примерно вычисляем стартовый seqno (1 блок ~ 5 секунд)
 	secondsAgo := time.Since(since).Seconds()
 	blocksAgo := uint32(secondsAgo / 5)
 
@@ -496,7 +453,6 @@ func (c *IndexerClient) Catchup(ctx context.Context, since time.Time, handler Ha
 		zap.Uint32("total_blocks", totalBlocks),
 	)
 
-	// Обрабатываем блоки
 	processed := uint32(0)
 	for seqno := startSeqno; seqno <= master.SeqNo; seqno++ {
 		select {
@@ -505,24 +461,17 @@ func (c *IndexerClient) Catchup(ctx context.Context, since time.Time, handler Ha
 		default:
 		}
 
-		// Для каждого блока — свой StickyContext
-		blockCtx := c.api.StickyContext(ctx)
-		if err := c.processBlock(blockCtx, seqno, handler); err != nil {
-			c.logger.Debug("ошибка обработки исторического блока",
-				zap.Uint32("seqno", seqno),
-				zap.Error(err),
-			)
+		if err := c.processBlock(ctx, seqno, handler); err != nil {
+			c.logger.Debug("ошибка обработки блока", zap.Uint32("seqno", seqno), zap.Error(err))
 		}
 
 		processed++
 
-		// Логируем прогресс каждые 1000 блоков
 		if processed%1000 == 0 {
 			progress := float64(processed) / float64(totalBlocks) * 100
 			c.logger.Info("catchup прогресс",
 				zap.Float64("percent", progress),
 				zap.Uint32("processed", processed),
-				zap.Uint32("total", totalBlocks),
 			)
 		}
 	}
@@ -537,30 +486,24 @@ func (c *IndexerClient) RunGetMethod(ctx context.Context, addrStr string, method
 		return nil, fmt.Errorf("API клиент не инициализирован")
 	}
 
-	// Парсим адрес
 	addr, err := address.ParseAddr(addrStr)
 	if err != nil {
-		// Пробуем raw формат (workchain:hex)
 		addr, err = parseRawAddress(addrStr)
 		if err != nil {
 			return nil, fmt.Errorf("некорректный адрес %s: %w", addrStr, err)
 		}
 	}
 
-	// Используем StickyContext для консистентности
-	stickyCtx := c.api.StickyContext(ctx)
-
-	master, err := c.api.CurrentMasterchainInfo(stickyCtx)
+	master, err := c.api.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось получить мастерчейн: %w", err)
 	}
 
-	res, err := c.api.RunGetMethod(stickyCtx, master, addr, method, args...)
+	res, err := c.api.RunGetMethod(ctx, master, addr, method, args...)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка вызова %s: %w", method, err)
 	}
 
-	// Конвертируем результат в байты
 	var result [][]byte
 	for i := 0; i < len(res.AsTuple()); i++ {
 		val := res.AsTuple()[i]
@@ -593,14 +536,12 @@ func (c *IndexerClient) GetCodeHash(ctx context.Context, addrStr string) (string
 		}
 	}
 
-	stickyCtx := c.api.StickyContext(ctx)
-
-	master, err := c.api.CurrentMasterchainInfo(stickyCtx)
+	master, err := c.api.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return "", fmt.Errorf("не удалось получить мастерчейн: %w", err)
 	}
 
-	acc, err := c.api.GetAccount(stickyCtx, master, addr)
+	acc, err := c.api.GetAccount(ctx, master, addr)
 	if err != nil {
 		return "", fmt.Errorf("не удалось получить аккаунт: %w", err)
 	}
@@ -609,7 +550,6 @@ func (c *IndexerClient) GetCodeHash(ctx context.Context, addrStr string) (string
 		return "", fmt.Errorf("аккаунт не активен")
 	}
 
-	// Получаем код контракта и вычисляем хэш
 	if acc.Code == nil {
 		return "", fmt.Errorf("у аккаунта нет кода")
 	}
@@ -623,7 +563,6 @@ func parseRawAddress(raw string) (*address.Address, error) {
 	var workchain int32
 	var hashHex string
 
-	// Парсим формат "workchain:hex"
 	n, err := fmt.Sscanf(raw, "%d:%s", &workchain, &hashHex)
 	if err != nil || n != 2 {
 		return nil, fmt.Errorf("неверный формат адреса: %s", raw)
@@ -661,16 +600,4 @@ func fetchGlobalConfig(ctx context.Context, url string) (*liteclient.GlobalConfi
 	}
 
 	return &cfg, nil
-}
-
-// Вспомогательные функции для работы с ключами
-func base64ToEd25519(b64 string) (ed25519.PublicKey, error) {
-	data, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("неверный размер ключа")
-	}
-	return ed25519.PublicKey(data), nil
 }
