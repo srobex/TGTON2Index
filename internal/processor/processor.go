@@ -17,6 +17,10 @@ type Processor struct {
 	cache    Cache
 	notifier *notifier.Notifier
 	logger   *zap.Logger
+
+	// Статистика
+	totalProcessed int64
+	totalDetected  int64
 }
 
 // Cache описывает минимальный интерфейс антидублирования.
@@ -44,21 +48,12 @@ func (p *Processor) Handle(event ton.Event) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	p.totalProcessed++
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Проверяем дубликаты по seqno
-	if p.cache != nil && event.Seqno > 0 {
-		isNew, err := p.cache.RegisterSeqno(ctx, event.Seqno)
-		if err != nil {
-			p.logger.Warn("ошибка записи seqno", zap.Error(err))
-		}
-		if !isNew {
-			return nil
-		}
-	}
-
-	// Проверяем, не обрабатывали ли мы этот адрес
+	// Проверяем дубликаты по адресу (быстрее чем seqno)
 	if p.cache != nil {
 		seen, err := p.cache.IsMinterKnown(ctx, event.AccountAddress)
 		if err != nil {
@@ -83,37 +78,38 @@ func (p *Processor) Handle(event ton.Event) error {
 		codeHash = ch
 	}
 
-	// Проверяем, является ли это JettonMinter
-	if !p.detector.IsJettonMinter(codeHash) {
-		return nil
-	}
-
-	// Это JettonMinter! Получаем метаданные
-	meta, err := p.detector.Inspect(ctx, event.AccountAddress, codeHash)
+	// ГЛАВНАЯ ПРОВЕРКА: Верификация по интерфейсу И/ИЛИ code_hash
+	// Используем VerifyAndInspect который проверяет get_jetton_data
+	meta, err := p.detector.VerifyAndInspect(ctx, event.AccountAddress, codeHash)
 	if err != nil {
 		if err == detector.ErrNotJettonMinter {
+			// Это не Jetton Minter — пропускаем молча
 			return nil
 		}
-		p.logger.Warn("ошибка детекции минтера",
+		p.logger.Warn("ошибка верификации минтера",
 			zap.String("address", event.AccountAddress),
 			zap.Error(err),
 		)
 		return nil
 	}
 
-	// Вычисляем задержку обнаружения
-	detectionLatency := time.Since(event.Timestamp)
+	p.totalDetected++
 
-	// Логируем находку
-	p.logger.Info(
-		"🚀 НАЙДЕН НОВЫЙ JETTON MINTER",
+	// Вычисляем общую задержку обнаружения
+	totalLatencyMs := time.Since(event.Timestamp).Milliseconds()
+	meta.DetectionLatencyMs = totalLatencyMs
+
+	// Логируем находку с деталями
+	p.logger.Info("🚀 НАЙДЕН JETTON MINTER",
 		zap.String("address", meta.Address),
-		zap.String("code_hash", meta.CodeHash),
 		zap.String("name", meta.Name),
 		zap.String("symbol", meta.Symbol),
-		zap.String("type", p.detector.GetMinterType(meta.CodeHash)),
-		zap.Duration("detection_latency", detectionLatency),
+		zap.String("type", meta.MinterType),
+		zap.Bool("known_code_hash", meta.KnownCodeHash),
+		zap.Bool("verified_by_interface", meta.VerifiedByInterface),
+		zap.Int64("latency_ms", totalLatencyMs),
 		zap.Int32("workchain", event.Workchain),
+		zap.Uint32("seqno", event.Seqno),
 	)
 
 	// Запоминаем адрес в кэше
@@ -123,10 +119,20 @@ func (p *Processor) Handle(event ton.Event) error {
 		}
 	}
 
-	// Отправляем уведомления
+	// Автоматически добавляем новый code_hash если верифицирован по интерфейсу
+	if meta.VerifiedByInterface && !meta.KnownCodeHash {
+		p.detector.AddCodeHash(meta.CodeHash, "auto_verified_"+time.Now().Format("2006-01-02"))
+	}
+
+	// Отправляем уведомления с расширенными данными
 	if p.notifier != nil {
-		p.notifier.Notify(ctx, meta)
+		p.notifier.NotifyWithEvent(ctx, meta, &event)
 	}
 
 	return nil
+}
+
+// GetStats возвращает статистику обработки.
+func (p *Processor) GetStats() (processed, detected int64) {
+	return p.totalProcessed, p.totalDetected
 }

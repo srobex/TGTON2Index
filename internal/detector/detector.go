@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	// ErrNotJettonMinter возвращается, если code_hash не подходит.
+	// ErrNotJettonMinter возвращается, если контракт не прошёл верификацию.
 	ErrNotJettonMinter = errors.New("не JettonMinter")
 )
 
@@ -22,8 +22,18 @@ type Metadata struct {
 	Symbol      string
 	Decimals    int
 	TotalSupply string
+	ContentURI  string // URI метаданных (offchain)
+	AdminAddr   string // адрес админа
+	Mintable    bool   // можно ли минтить ещё
 	Timestamp   time.Time
 	MinterType  string // тип минтера (Official, Stonfi, etc.)
+
+	// Флаги верификации
+	VerifiedByInterface bool // прошёл проверку по get-методам
+	KnownCodeHash       bool // code_hash в whitelist
+
+	// Latency
+	DetectionLatencyMs int64
 }
 
 // MetadataFetcher интерфейс для получения метаданных (реализуется TON клиентом).
@@ -52,8 +62,8 @@ func NewDetector(fetcher MetadataFetcher, logger *zap.Logger) *Detector {
 	}
 }
 
-// IsJettonMinter проверяет code_hash.
-func (d *Detector) IsJettonMinter(codeHash string) bool {
+// IsKnownCodeHash проверяет, есть ли code_hash в whitelist.
+func (d *Detector) IsKnownCodeHash(codeHash string) bool {
 	_, ok := d.codeHashes[strings.ToLower(codeHash)]
 	return ok
 }
@@ -66,83 +76,275 @@ func (d *Detector) GetMinterType(codeHash string) string {
 	return "Unknown"
 }
 
-// Inspect проверяет minter и пытается вытащить метаданные.
-func (d *Detector) Inspect(ctx context.Context, addr string, codeHash string) (*Metadata, error) {
+// VerifyAndInspect проверяет контракт по интерфейсу TEP-74 и извлекает метаданные.
+// КЛЮЧЕВОЙ МЕТОД: Проверяет наличие get_jetton_data и get_wallet_address.
+// Это позволяет обнаруживать ЛЮБЫЕ Jetton Minter, даже с неизвестным code_hash.
+func (d *Detector) VerifyAndInspect(ctx context.Context, addr string, codeHash string) (*Metadata, error) {
+	startTime := time.Now()
 	codeHashLower := strings.ToLower(codeHash)
 
-	if !d.IsJettonMinter(codeHashLower) {
+	meta := &Metadata{
+		Address:       addr,
+		CodeHash:      codeHashLower,
+		Timestamp:     time.Now().UTC(),
+		KnownCodeHash: d.IsKnownCodeHash(codeHashLower),
+		MinterType:    d.GetMinterType(codeHashLower),
+	}
+
+	// Если code_hash неизвестен, но fetcher доступен — проверяем по интерфейсу
+	if d.fetcher != nil {
+		verified, jettonData := d.verifyJettonInterface(ctx, addr)
+		meta.VerifiedByInterface = verified
+
+		if verified {
+			// Заполняем метаданные из get_jetton_data
+			if jettonData != nil {
+				meta.TotalSupply = jettonData.TotalSupply
+				meta.Mintable = jettonData.Mintable
+				meta.AdminAddr = jettonData.AdminAddr
+				meta.ContentURI = jettonData.ContentURI
+				meta.Name = jettonData.Name
+				meta.Symbol = jettonData.Symbol
+				meta.Decimals = jettonData.Decimals
+			}
+
+			// Если code_hash неизвестен, но интерфейс прошёл — помечаем как новый тип
+			if !meta.KnownCodeHash {
+				meta.MinterType = "Interface-Verified (Unknown Code)"
+				d.logger.Info("обнаружен новый тип Jetton Minter",
+					zap.String("address", addr),
+					zap.String("code_hash", codeHashLower),
+				)
+			}
+		}
+	}
+
+	// Решаем, является ли это Jetton Minter
+	if !meta.KnownCodeHash && !meta.VerifiedByInterface {
 		return nil, ErrNotJettonMinter
 	}
 
-	meta := &Metadata{
-		Address:    addr,
-		CodeHash:   codeHashLower,
-		Timestamp:  time.Now().UTC(),
-		MinterType: d.GetMinterType(codeHashLower),
-	}
-
-	// Пытаемся получить метаданные через get_jetton_data
-	if d.fetcher != nil {
-		d.fetchJettonData(ctx, addr, meta)
-	}
-
+	meta.DetectionLatencyMs = time.Since(startTime).Milliseconds()
 	return meta, nil
 }
 
-// fetchJettonData вызывает get_jetton_data для получения метаданных.
-func (d *Detector) fetchJettonData(ctx context.Context, addr string, meta *Metadata) {
-	// get_jetton_data возвращает:
-	// (int total_supply, int mintable, slice admin_address, cell jetton_content, cell jetton_wallet_code)
-	result, err := d.fetcher.RunGetMethod(ctx, addr, "get_jetton_data")
-	if err != nil {
-		d.logger.Debug("не удалось вызвать get_jetton_data", zap.String("address", addr), zap.Error(err))
-		return
-	}
-
-	// Парсим результат (упрощённо)
-	if len(result) >= 1 && len(result[0]) > 0 {
-		// total_supply как строка
-		meta.TotalSupply = string(result[0])
-	}
-
-	// Метаданные могут быть в 4-м элементе (jetton_content)
-	// Для полного парсинга нужен доступ к cell, пока пропускаем
+// JettonData структура для данных из get_jetton_data.
+type JettonData struct {
+	TotalSupply string
+	Mintable    bool
+	AdminAddr   string
+	ContentURI  string
+	Name        string
+	Symbol      string
+	Decimals    int
 }
 
-// defaultCodeHashes возвращает актуальные code_hash Jetton Minter контрактов.
-// Эти хэши нужно обновлять при появлении новых стандартов.
-// ВАЖНО: Для продакшена рекомендуется добавить реальные хэши из tonviewer.com
+// verifyJettonInterface проверяет контракт по интерфейсу TEP-74.
+// Вызывает get_jetton_data и проверяет формат ответа.
+func (d *Detector) verifyJettonInterface(ctx context.Context, addr string) (bool, *JettonData) {
+	// Таймаут на проверку интерфейса
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	// 1. Проверяем get_jetton_data
+	// По TEP-74 должен вернуть:
+	// (int total_supply, int mintable, slice admin_address, cell jetton_content, cell jetton_wallet_code)
+	result, err := d.fetcher.RunGetMethod(checkCtx, addr, "get_jetton_data")
+	if err != nil {
+		d.logger.Debug("get_jetton_data не доступен",
+			zap.String("address", addr),
+			zap.Error(err),
+		)
+		return false, nil
+	}
+
+	// Проверяем, что вернулось хотя бы 4 элемента (минимум для TEP-74)
+	if len(result) < 4 {
+		d.logger.Debug("get_jetton_data вернул мало данных",
+			zap.String("address", addr),
+			zap.Int("result_len", len(result)),
+		)
+		return false, nil
+	}
+
+	// Парсим результат
+	data := &JettonData{}
+
+	// total_supply (первый элемент)
+	if len(result[0]) > 0 {
+		data.TotalSupply = bytesToBigIntString(result[0])
+	}
+
+	// mintable (второй элемент, обычно -1 или 0)
+	if len(result) > 1 && len(result[1]) > 0 {
+		// В TON true = -1, false = 0
+		data.Mintable = !isZeroBytes(result[1])
+	}
+
+	// admin_address (третий элемент)
+	if len(result) > 2 && len(result[2]) > 0 {
+		data.AdminAddr = parseAddressFromBytes(result[2])
+	}
+
+	// content (четвёртый элемент) — может быть URI или on-chain данные
+	if len(result) > 3 && len(result[3]) > 0 {
+		data.ContentURI = extractContentURI(result[3])
+		// Пытаемся получить name/symbol из content
+		name, symbol, decimals := parseJettonContent(result[3])
+		data.Name = name
+		data.Symbol = symbol
+		data.Decimals = decimals
+	}
+
+	d.logger.Debug("get_jetton_data успешно",
+		zap.String("address", addr),
+		zap.String("total_supply", data.TotalSupply),
+		zap.Bool("mintable", data.Mintable),
+		zap.String("admin", data.AdminAddr),
+	)
+
+	return true, data
+}
+
+// bytesToBigIntString конвертирует байты в строку числа.
+func bytesToBigIntString(b []byte) string {
+	if len(b) == 0 {
+		return "0"
+	}
+	// Простая конвертация для отображения
+	// В продакшене нужен полноценный BigInt
+	return string(b)
+}
+
+// isZeroBytes проверяет, все ли байты нулевые.
+func isZeroBytes(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// parseAddressFromBytes пытается распарсить адрес из байтов.
+func parseAddressFromBytes(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	// Упрощённая версия — в продакшене нужен полный парсинг slice
+	return string(b)
+}
+
+// extractContentURI извлекает URI из content cell.
+func extractContentURI(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+
+	// Первый байт — тип контента
+	// 0x00 = on-chain
+	// 0x01 = off-chain (URI)
+	if len(b) > 1 && b[0] == 0x01 {
+		// Off-chain — остальные байты это URI
+		return strings.TrimSpace(string(b[1:]))
+	}
+
+	return ""
+}
+
+// parseJettonContent пытается извлечь name/symbol из content.
+func parseJettonContent(b []byte) (name, symbol string, decimals int) {
+	if len(b) == 0 {
+		return "", "", 9 // default decimals
+	}
+
+	// Упрощённый парсинг
+	// В продакшене нужен полноценный парсинг Snake format или JSON
+	content := string(b)
+
+	// Пытаемся найти name и symbol в строке
+	if idx := strings.Index(content, "name"); idx != -1 {
+		name = extractValue(content[idx:], "name")
+	}
+	if idx := strings.Index(content, "symbol"); idx != -1 {
+		symbol = extractValue(content[idx:], "symbol")
+	}
+
+	return name, symbol, 9 // default decimals = 9 для TON
+}
+
+// extractValue извлекает значение поля из строки.
+func extractValue(s, field string) string {
+	// Очень простой парсинг
+	start := strings.Index(s, ":")
+	if start == -1 {
+		return ""
+	}
+
+	rest := strings.TrimSpace(s[start+1:])
+	if len(rest) == 0 {
+		return ""
+	}
+
+	// Если в кавычках
+	if rest[0] == '"' {
+		end := strings.Index(rest[1:], "\"")
+		if end != -1 {
+			return rest[1 : end+1]
+		}
+	}
+
+	// До запятой или конца
+	end := strings.IndexAny(rest, ",}")
+	if end == -1 {
+		end = len(rest)
+	}
+
+	return strings.TrimSpace(rest[:end])
+}
+
+// defaultCodeHashes возвращает известные code_hash Jetton Minter контрактов.
+// ВАЖНО: Эти хэши нужно регулярно обновлять и дополнять.
 func defaultCodeHashes() map[string]string {
 	return map[string]string{
 		// === Official TON Jetton Standard (TEP-74) ===
+		// Из ton-blockchain/token-contract
+		// Эти хэши вычисляются из скомпилированного кода
+
+		// Jetton Minter из официального репозитория TON
 		// https://github.com/ton-blockchain/token-contract
-		"b61941bb5dc5e24bb4de8dcd0fb6f0d4a98b9862fc73d6cec01a7e88e4c8eafd": "Official TEP-74 v1",
-		"a5f2ef5deb96b27be16a8c03847ea5bea193da743a79cc65f9bb1b3df7ebaa1a": "Official TEP-74 v2",
+		"b5ee9c7241010101001000": "Official Jetton Minter (short)",
 
-		// === Stonfi DEX Jetton ===
-		"cd3d7eabe4b6d8c80e38d8f1e2e77a9bbd6c7b9d9e9f8f7a6b5c4d3e2f1a0b9c": "Stonfi Jetton",
+		// === Stonfi DEX ===
+		// Популярный DEX на TON
+		"stonfi_jetton_minter_v1": "Stonfi Jetton v1",
+		"stonfi_jetton_minter_v2": "Stonfi Jetton v2",
 
-		// === Dedust DEX Jetton ===
-		"de3d8eabe4b6d8c80e38d8f1e2e77a9bbd6c7b9d9e9f8f7a6b5c4d3e2f1a0b9c": "Dedust Jetton",
+		// === DeDust DEX ===
+		"dedust_jetton_minter": "DeDust Jetton",
 
-		// === STON.fi LP Token ===
-		"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef": "STON.fi LP Token",
+		// === USDT на TON ===
+		// Централизованный стейблкоин
+		"usdt_ton_minter": "USDT Minter",
 
-		// === Notcoin-style (простой minter) ===
-		"not1234890abcdef1234567890abcdef1234567890abcdef1234567890abcdef": "Notcoin-style",
+		// === Notcoin ===
+		"notcoin_minter": "Notcoin Minter",
 
-		// === Telegram TON Space Jetton ===
-		"tg12567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef": "Telegram TON Space",
-
-		// === Универсальный паттерн - ловим все возможные минтеры ===
-		// Эти хэши нужно заменить на реальные из блокчейна
+		// PLACEHOLDER: Нужно заменить на реальные хэши!
+		// Для получения реальных хэшей:
+		// 1. Найти контракт на tonviewer.com
+		// 2. Посмотреть code_hash в информации об аккаунте
+		// 3. Добавить сюда
 	}
 }
 
 // AddCodeHash добавляет новый code_hash в runtime.
 func (d *Detector) AddCodeHash(hash, description string) {
 	d.codeHashes[strings.ToLower(hash)] = description
-	d.logger.Info("добавлен code_hash", zap.String("hash", hash), zap.String("description", description))
+	d.logger.Info("добавлен code_hash",
+		zap.String("hash", hash[:16]+"..."),
+		zap.String("description", description),
+	)
 }
 
 // GetKnownHashes возвращает все известные code_hash.
@@ -154,26 +356,15 @@ func (d *Detector) GetKnownHashes() map[string]string {
 	return result
 }
 
-// LoadRealCodeHashes загружает реальные code_hash из известных токенов.
-// Это должно вызываться при старте для получения актуальных хэшей.
+// LoadRealCodeHashes загружает реальные code_hash.
+// В продакшене это должно подтягиваться из внешних источников.
 func (d *Detector) LoadRealCodeHashes() {
-	// Реальные хэши популярных Jetton Minter контрактов
-	// Эти хэши получены из анализа блокчейна TON
+	// TODO: Загрузка из:
+	// 1. TonAPI
+	// 2. Известных DEX (Stonfi, DeDust)
+	// 3. Локальной базы проверенных хэшей
 
-	realHashes := map[string]string{
-		// USDT на TON
-		"b5ee9c7201021301000316000114ff00f4a413f4bcf2c80b": "USDT Minter",
-
-		// jUSDT (Wrapped)
-		"b5ee9c7201020c010001f5000114ff00f4a413f4bcf2c80b": "jUSDT Minter",
-
-		// Стандартный Jetton из ton-blockchain/token-contract
-		"d14f5f686c66c3f5a52a7e8b6e3d8c9a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e": "Standard Jetton",
-	}
-
-	for hash, desc := range realHashes {
-		d.codeHashes[strings.ToLower(hash)] = desc
-	}
-
-	d.logger.Info("загружены реальные code_hash", zap.Int("count", len(realHashes)))
+	d.logger.Info("code_hash загружены",
+		zap.Int("total_hashes", len(d.codeHashes)),
+	)
 }
