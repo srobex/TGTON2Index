@@ -123,34 +123,38 @@ func (n *Notifier) console(meta *detector.Metadata) {
 
 // telegram отправляет сообщение в Telegram.
 func (n *Notifier) telegram(ctx context.Context, meta *detector.Metadata) error {
+	n.logger.Info("отправляем в Telegram", zap.String("address", meta.Address))
+
 	// Формируем статус
 	var status string
 	if meta.VerifiedByInterface && meta.KnownCodeHash {
-		status = "✅ Верифицирован"
+		status = "Верифицирован"
 	} else if meta.VerifiedByInterface {
-		status = "⚠️ Новый тип (interface OK)"
+		status = "Новый тип"
 	} else if meta.KnownCodeHash {
-		status = "✓ Известный code"
+		status = "Известный code"
 	} else {
-		status = "❓ Неизвестный"
+		status = "Неизвестный"
 	}
 
+	// Простой текст без Markdown (надёжнее)
 	var text string
 	if meta.Name != "" || meta.Symbol != "" {
 		text = fmt.Sprintf(
-			"🚀 *JETTON MINTER*\n\n"+
-				"📝 *Название:* %s\n"+
-				"🏷️ *Тикер:* %s\n"+
-				"📍 *Адрес:* `%s`\n"+
-				"🔧 *Тип:* %s\n"+
-				"📊 *Статус:* %s\n"+
-				"⚡ *Latency:* %d ms\n\n"+
-				"🔍 [Tonviewer](%s%s) | [Tonscan](%s%s)\n\n"+
+			"🚀 JETTON MINTER\n\n"+
+				"📝 Название: %s\n"+
+				"🏷️ Тикер: %s\n"+
+				"📍 Адрес: %s\n"+
+				"🔧 Тип: %s\n"+
+				"📊 Статус: %s\n"+
+				"⚡ Latency: %d ms\n\n"+
+				"🔍 Tonviewer: %s%s\n"+
+				"🔍 Tonscan: %s%s\n\n"+
 				"⏱️ %s",
-			escapeMarkdown(meta.Name),
-			escapeMarkdown(meta.Symbol),
+			meta.Name,
+			meta.Symbol,
 			meta.Address,
-			escapeMarkdown(meta.MinterType),
+			meta.MinterType,
 			status,
 			meta.DetectionLatencyMs,
 			tonViewerBase, meta.Address,
@@ -159,15 +163,16 @@ func (n *Notifier) telegram(ctx context.Context, meta *detector.Metadata) error 
 		)
 	} else {
 		text = fmt.Sprintf(
-			"🚀 *JETTON MINTER*\n\n"+
-				"📍 *Адрес:* `%s`\n"+
-				"🔧 *Тип:* %s\n"+
-				"📊 *Статус:* %s\n"+
-				"⚡ *Latency:* %d ms\n\n"+
-				"🔍 [Tonviewer](%s%s) | [Tonscan](%s%s)\n\n"+
+			"🚀 JETTON MINTER\n\n"+
+				"📍 Адрес: %s\n"+
+				"🔧 Тип: %s\n"+
+				"📊 Статус: %s\n"+
+				"⚡ Latency: %d ms\n\n"+
+				"🔍 Tonviewer: %s%s\n"+
+				"🔍 Tonscan: %s%s\n\n"+
 				"⏱️ %s",
 			meta.Address,
-			escapeMarkdown(meta.MinterType),
+			meta.MinterType,
 			status,
 			meta.DetectionLatencyMs,
 			tonViewerBase, meta.Address,
@@ -180,7 +185,6 @@ func (n *Notifier) telegram(ctx context.Context, meta *detector.Metadata) error 
 	data := url.Values{}
 	data.Set("chat_id", n.tgChatID)
 	data.Set("text", text)
-	data.Set("parse_mode", "Markdown")
 	data.Set("disable_web_page_preview", "true")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewBufferString(data.Encode()))

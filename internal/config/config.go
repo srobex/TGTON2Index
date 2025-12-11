@@ -104,8 +104,13 @@ func (c *Config) MinterCacheDuration() time.Duration {
 }
 
 // CatchupDuration возвращает длительность окна для режима catchup.
+// Если catchup_hours = 0, catchup отключён.
+// Если catchup_hours < 0, используется default (24 часа).
 func (c *Config) CatchupDuration() time.Duration {
-	if c.App.CatchupHours <= 0 {
+	if c.App.CatchupHours == 0 {
+		return 0 // Отключить catchup
+	}
+	if c.App.CatchupHours < 0 {
 		return time.Duration(defaultCatchupHours) * time.Hour
 	}
 	return time.Duration(c.App.CatchupHours) * time.Hour

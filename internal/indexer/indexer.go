@@ -71,8 +71,16 @@ func (s *Service) runRealtime(ctx context.Context) {
 }
 
 func (s *Service) runCatchup(ctx context.Context) {
-	since := time.Now().Add(-s.cfg.CatchupDuration())
-	s.logger.Info("запуск catchup", zap.Time("since", since))
+	catchupDuration := s.cfg.CatchupDuration()
+
+	// Если catchup_hours = 0, пропускаем catchup
+	if catchupDuration == 0 {
+		s.logger.Info("catchup отключён (catchup_hours = 0)")
+		return
+	}
+
+	since := time.Now().Add(-catchupDuration)
+	s.logger.Info("запуск catchup", zap.Time("since", since), zap.Duration("duration", catchupDuration))
 
 	handler := func(event ton.Event) error {
 		if s.processor == nil {
